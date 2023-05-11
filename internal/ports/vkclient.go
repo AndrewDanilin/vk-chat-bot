@@ -35,10 +35,17 @@ type VKClient struct {
 	version     string
 	client      http.Client
 	app         app.App
-	mode        UserMode
+	userModes   map[int]UserMode
 }
 
 func (vkc *VKClient) Run() error {
+	go func() {
+		for {
+			vkc.notifyReminders()
+			time.Sleep(10 * time.Second)
+		}
+	}()
+
 	for {
 		lps, err := vkc.getLongPollServer()
 		if err != nil {
@@ -65,10 +72,33 @@ func (vkc *VKClient) Run() error {
 			return fmt.Errorf("failed to unmarshal body: %v", err)
 		}
 
-		fmt.Println(getUpdatesSuccessResponse)
-
 		vkc.handleUpdates(getUpdatesSuccessResponse.Updates)
 	}
+}
+
+func (vkc *VKClient) notifyReminders() error {
+	for k, _ := range vkc.userModes {
+		reminders, _ := vkc.app.ListReminders(context.Background(), int64(k))
+		for _, r := range *reminders {
+			if r.Time.Before(time.Now()) {
+				_, err := vkc.doRequest(
+					http.MethodPost,
+					vkc.BaseURL+"messages.send",
+					map[string]string{
+						"user_id":   strconv.Itoa(k),
+						"random_id": strconv.Itoa(rand.Intn(math.MaxInt32)),
+						"v":         vkc.version,
+						"message":   ui.TimeIsLeft + "\n" + remindersToString([]reminder.Reminder{r}),
+					},
+					nil,
+				)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (vkc *VKClient) doRequest(httpMethod string, URL string, query map[string]string, data []byte) ([]byte, error) {
@@ -96,8 +126,6 @@ func (vkc *VKClient) doRequest(httpMethod string, URL string, query map[string]s
 		return nil, fmt.Errorf("failed to read response body: %v", err)
 	}
 
-	fmt.Println(string(respBody))
-
 	return respBody, nil
 }
 
@@ -115,58 +143,58 @@ func (vkc *VKClient) handleUpdates(updates []Update) {
 }
 
 func (vkc *VKClient) handleMessage(message Message) error {
-	if vkc.mode == UserEnterReminderMode {
+	if vkc.userModes[message.FromID] == UserEnterReminderMode {
 		if message.Text == ui.BackToMainMenuUserMessage {
-			vkc.mode = UserClicksMenuMode
-			return vkc.showMenu(ui.MainMenu, int(message.FromID), ui.BackToMainMenuBotMessage)
+			vkc.userModes[message.FromID] = UserClicksMenuMode
+			return vkc.showMenu(ui.MainMenu, message.FromID, ui.BackToMainMenuBotMessage)
 		}
 		parts := strings.Split(message.Text, ";")
 		timeParsed, err := time.Parse(time.DateTime, parts[0])
 		if err != nil {
 			return err
 		}
-		_, err = vkc.app.AddReminder(context.Background(), parts[1], timeParsed)
+		_, err = vkc.app.AddReminder(context.Background(), parts[1], timeParsed, int64(message.FromID))
 		if err != nil {
 			return err
 		}
-		vkc.mode = UserClicksMenuMode
-		return vkc.showMenu(ui.MainMenu, int(message.FromID), ui.ReminderSuccessfullyAddedBotMessage+ui.BackToMainMenuBotMessage)
+		vkc.userModes[message.FromID] = UserClicksMenuMode
+		return vkc.showMenu(ui.MainMenu, message.FromID, ui.ReminderSuccessfullyAddedBotMessage+ui.BackToMainMenuBotMessage)
 	}
 
-	if vkc.mode == UserDeletingReminderMode {
+	if vkc.userModes[message.FromID] == UserDeletingReminderMode {
 		if message.Text == ui.DeleteManyRemindersUserMessage {
-			return vkc.showMenu(ui.OnlyBackMenu, int(message.FromID), ui.EnterReminderIDsBotMessage)
+			return vkc.showMenu(ui.OnlyBackMenu, message.FromID, ui.EnterReminderIDsBotMessage)
 		}
 
 		if message.Text == ui.BackToMainMenuUserMessage {
-			vkc.mode = UserClicksMenuMode
-			return vkc.showMenu(ui.MainMenu, int(message.FromID), ui.BackToMainMenuBotMessage)
+			vkc.userModes[message.FromID] = UserClicksMenuMode
+			return vkc.showMenu(ui.MainMenu, message.FromID, ui.BackToMainMenuBotMessage)
 		}
 		parts := strings.Split(message.Text, ",")
 		for _, p := range parts {
 			idx, err := strconv.Atoi(p)
 			if err != nil {
-				return vkc.showMenu(ui.OnlyBackMenu, int(message.FromID), ui.WrongFormat)
+				return vkc.showMenu(ui.OnlyBackMenu, message.FromID, ui.WrongFormatBotMessage)
 			}
 			vkc.app.DeleteReminder(context.Background(), int64(idx))
 		}
-		vkc.mode = UserClicksMenuMode
-		return vkc.showMenu(ui.MainMenu, int(message.FromID), ui.ReminderSuccessfullyDeletedBotMessage)
+		vkc.userModes[message.FromID] = UserClicksMenuMode
+		return vkc.showMenu(ui.MainMenu, message.FromID, ui.ReminderSuccessfullyDeletedBotMessage)
 	}
 
-	if vkc.mode == UserUpdatingReminderMode {
+	if vkc.userModes[message.FromID] == UserUpdatingReminderMode {
 		parts := strings.Split(message.Text, ";")
 		timeParsed, err := time.Parse(time.DateTime, parts[1])
 		if err != nil {
-			return vkc.showMenu(ui.OnlyBackMenu, int(message.FromID), ui.WrongFormat)
+			return vkc.showMenu(ui.OnlyBackMenu, message.FromID, ui.WrongFormatBotMessage)
 		}
 		idx, err := strconv.Atoi(parts[0])
 		if err != nil {
-			return vkc.showMenu(ui.OnlyBackMenu, int(message.FromID), ui.WrongFormat)
+			return vkc.showMenu(ui.OnlyBackMenu, message.FromID, ui.WrongFormatBotMessage)
 		}
 
-		vkc.app.UpdateReminder(context.Background(), int64(idx), timeParsed)
-		vkc.mode = UserClicksMenuMode
+		vkc.app.UpdateReminder(context.Background(), int64(idx), timeParsed, int64(message.FromID))
+		vkc.userModes[message.FromID] = UserClicksMenuMode
 		return nil
 	}
 
@@ -174,49 +202,50 @@ func (vkc *VKClient) handleMessage(message Message) error {
 
 	switch message.Text {
 	case ui.StartUserMessage:
-		err = vkc.showMenu(ui.MainMenu, int(message.FromID), ui.StartBotMessage)
+		vkc.userModes[message.FromID] = UserClicksMenuMode
+		err = vkc.showMenu(ui.MainMenu, message.FromID, ui.StartBotMessage)
 	case ui.CreateReminderUserMessage:
-		err = vkc.showMenu(ui.CreateReminderMenu, int(message.FromID), ui.ChooseActionBotMessage)
+		err = vkc.showMenu(ui.CreateReminderMenu, message.FromID, ui.ChooseActionBotMessage)
 	case ui.ListReminderUserMessage:
-		reminders, _ := vkc.app.ListReminders(context.Background())
+		reminders, _ := vkc.app.ListReminders(context.Background(), int64(message.FromID))
 		if len(*reminders) == 0 {
-			err = vkc.showMenu(ui.ListRemindersMenu, int(message.FromID), ui.DontHaveRemindersBotMessage)
+			err = vkc.showMenu(ui.ListRemindersMenu, message.FromID, ui.DontHaveRemindersBotMessage)
 		} else {
-			err = vkc.showMenu(ui.ListRemindersMenu, int(message.FromID), remindersToString(*reminders))
+			err = vkc.showMenu(ui.ListRemindersMenu, message.FromID, remindersToString(*reminders))
 		}
-	case ui.SortByDateUserMessage:
-		reminders, _ := vkc.app.ListSortedByDateReminders(context.Background())
+	case ui.SortRemindersByDateUserMessage:
+		reminders, _ := vkc.app.ListSortedByDateReminders(context.Background(), int64(message.FromID))
 		if len(*reminders) == 0 {
-			err = vkc.showMenu(ui.ListRemindersMenu, int(message.FromID), ui.DontHaveRemindersBotMessage)
+			err = vkc.showMenu(ui.ListRemindersMenu, message.FromID, ui.DontHaveRemindersBotMessage)
 		} else {
-			err = vkc.showMenu(ui.ListRemindersMenu, int(message.FromID), remindersToString(*reminders))
+			err = vkc.showMenu(ui.ListRemindersMenu, message.FromID, remindersToString(*reminders))
 		}
 	case ui.DeleteReminderUserMessage:
-		vkc.mode = UserDeletingReminderMode
-		reminders, _ := vkc.app.ListReminders(context.Background())
+		vkc.userModes[message.FromID] = UserDeletingReminderMode
+		reminders, _ := vkc.app.ListReminders(context.Background(), int64(message.FromID))
 		if len(*reminders) == 0 {
-			err = vkc.showMenu(ui.DeleteReminderMenu, int(message.FromID), ui.DontHaveRemindersBotMessage)
+			err = vkc.showMenu(ui.DeleteReminderMenu, message.FromID, ui.DontHaveRemindersBotMessage)
 		} else {
-			err = vkc.showMenu(ui.DeleteReminderMenu, int(message.FromID), remindersToIndexed(*reminders)+ui.InputReminderIDBotMessage)
+			err = vkc.showMenu(ui.DeleteReminderMenu, message.FromID, remindersToIndexed(*reminders)+ui.EnterReminderIDBotMessage)
 		}
 	case ui.BackToMainMenuUserMessage:
-		err = vkc.showMenu(ui.MainMenu, int(message.FromID), ui.BackToMainMenuBotMessage)
-	case ui.EnterReminderUserMessage:
-		vkc.mode = UserEnterReminderMode
-		err = vkc.showMenu(ui.OnlyBackMenu, int(message.FromID), ui.CreateReminderDateTextBotMessage)
+		err = vkc.showMenu(ui.MainMenu, message.FromID, ui.BackToMainMenuBotMessage)
+	case ui.EnterReminderDateAndTextUserMessage:
+		vkc.userModes[message.FromID] = UserEnterReminderMode
+		err = vkc.showMenu(ui.OnlyBackMenu, message.FromID, ui.EnterReminderDateAndTextBotMessage)
 	case ui.DeleteManyRemindersUserMessage:
-		vkc.mode = UserDeletingReminderMode
-		err = vkc.showMenu(ui.OnlyBackMenu, int(message.FromID), ui.EnterReminderIDsBotMessage)
+		vkc.userModes[message.FromID] = UserDeletingReminderMode
+		err = vkc.showMenu(ui.OnlyBackMenu, message.FromID, ui.EnterReminderIDsBotMessage)
 	case ui.UpdateReminderUserMessage:
-		err = vkc.showMenu(ui.UpdateReminderMenu, int(message.FromID), ui.ChooseActionBotMessage)
+		err = vkc.showMenu(ui.UpdateReminderMenu, message.FromID, ui.ChooseActionBotMessage)
 	case ui.UpdateReminderDateUserMessage:
-		vkc.mode = UserUpdatingReminderMode
-		reminders, _ := vkc.app.ListReminders(context.Background())
+		vkc.userModes[message.FromID] = UserUpdatingReminderMode
+		reminders, _ := vkc.app.ListReminders(context.Background(), int64(message.FromID))
 		if len(*reminders) == 0 {
-			err = vkc.showMenu(ui.OnlyBackMenu, int(message.FromID), ui.DontHaveRemindersBotMessage)
-			vkc.mode = UserClicksMenuMode
+			err = vkc.showMenu(ui.OnlyBackMenu, message.FromID, ui.DontHaveRemindersBotMessage)
+			vkc.userModes[message.FromID] = UserClicksMenuMode
 		} else {
-			err = vkc.showMenu(ui.OnlyBackMenu, int(message.FromID), remindersToIndexed(*reminders)+ui.InputReminderIdUpdatingBotMessage)
+			err = vkc.showMenu(ui.OnlyBackMenu, message.FromID, remindersToIndexed(*reminders)+ui.EnterReminderIdUpdatingBotMessage)
 		}
 	}
 	if err != nil {
@@ -302,5 +331,6 @@ func NewClient(baseURL string, accessToken string, app app.App, groupID string, 
 		client:      http.Client{},
 		groupID:     groupID,
 		version:     version,
+		userModes:   map[int]UserMode{},
 	}
 }

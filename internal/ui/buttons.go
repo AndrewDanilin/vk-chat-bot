@@ -43,8 +43,10 @@ var MenuToKeyboard = map[MenuType]Keyboard{
 			{
 				{Action: Action{
 					Type:  "text",
-					Label: SortByDateUserMessage,
+					Label: SortRemindersByDateUserMessage,
 				}},
+			},
+			{
 				{Action: Action{
 					Type:  "text",
 					Label: BackToMainMenuUserMessage,
@@ -58,8 +60,10 @@ var MenuToKeyboard = map[MenuType]Keyboard{
 			{
 				{Action: Action{
 					Type:  "text",
-					Label: EnterReminderUserMessage,
+					Label: EnterReminderDateAndTextUserMessage,
 				}},
+			},
+			{
 				{Action: Action{
 					Type:  "text",
 					Label: BackToMainMenuUserMessage,

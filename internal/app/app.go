@@ -2,26 +2,31 @@ package app
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"time"
 
 	"VKInternshipChatBot/internal/entities/reminder"
 )
 
+var (
+	UpdateReminderProhibitedErr = errors.New("updating reminder is prohibited")
+)
+
 type App interface {
-	AddReminder(ctx context.Context, text string, time time.Time) (*reminder.Reminder, error)
-	UpdateReminder(ctx context.Context, ID int64, time time.Time) (*reminder.Reminder, error)
+	AddReminder(ctx context.Context, text string, time time.Time, userID int64) (*reminder.Reminder, error)
+	UpdateReminder(ctx context.Context, ID int64, time time.Time, userID int64) (*reminder.Reminder, error)
 	DeleteReminder(ctx context.Context, ID int64) error
-	ListReminders(ctx context.Context) (*[]reminder.Reminder, error)
-	ListSortedByDateReminders(ctx context.Context) (*[]reminder.Reminder, error)
+	ListReminders(ctx context.Context, userID int64) (*[]reminder.Reminder, error)
+	ListSortedByDateReminders(ctx context.Context, userID int64) (*[]reminder.Reminder, error)
 }
 
 type ReminderApp struct {
 	repository Repository
 }
 
-func (ra ReminderApp) AddReminder(ctx context.Context, text string, time time.Time) (*reminder.Reminder, error) {
-	r := reminder.New(text, time)
+func (ra ReminderApp) AddReminder(ctx context.Context, text string, time time.Time, userID int64) (*reminder.Reminder, error) {
+	r := reminder.New(text, time, userID)
 
 	id, err := ra.repository.AddReminder(ctx, r)
 	if err != nil {
@@ -33,10 +38,14 @@ func (ra ReminderApp) AddReminder(ctx context.Context, text string, time time.Ti
 	return &r, nil
 }
 
-func (ra ReminderApp) UpdateReminder(ctx context.Context, ID int64, time time.Time) (*reminder.Reminder, error) {
+func (ra ReminderApp) UpdateReminder(ctx context.Context, ID int64, time time.Time, userID int64) (*reminder.Reminder, error) {
 	r, err := ra.repository.GetReminderById(ctx, ID)
 	if err != nil {
 		return nil, err
+	}
+
+	if r.UserID != userID {
+		return nil, UpdateReminderProhibitedErr
 	}
 
 	r.Time = time
@@ -46,16 +55,16 @@ func (ra ReminderApp) UpdateReminder(ctx context.Context, ID int64, time time.Ti
 	return r, err
 }
 
-func (ra ReminderApp) ListReminders(ctx context.Context) (*[]reminder.Reminder, error) {
-	reminders, err := ra.repository.GetAllReminders(ctx)
+func (ra ReminderApp) ListReminders(ctx context.Context, userID int64) (*[]reminder.Reminder, error) {
+	reminders, err := ra.repository.GetRemindersByFilters(ctx, []ReminderFilter{UserIDFilter(userID)}...)
 	if err != nil {
 		return nil, err
 	}
 	return reminders, nil
 }
 
-func (ra ReminderApp) ListSortedByDateReminders(ctx context.Context) (*[]reminder.Reminder, error) {
-	reminders, err := ra.repository.GetAllReminders(ctx)
+func (ra ReminderApp) ListSortedByDateReminders(ctx context.Context, userID int64) (*[]reminder.Reminder, error) {
+	reminders, err := ra.repository.GetRemindersByFilters(ctx, []ReminderFilter{UserIDFilter(userID)}...)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +89,15 @@ type Repository interface {
 	UpdateReminderById(ctx context.Context, ID int64, reminder reminder.Reminder) error
 	DeleteReminderById(ctx context.Context, ID int64) error
 	GetReminderById(ctx context.Context, ID int64) (*reminder.Reminder, error)
-	GetAllReminders(ctx context.Context) (*[]reminder.Reminder, error)
+	GetRemindersByFilters(ctx context.Context, filters ...ReminderFilter) (*[]reminder.Reminder, error)
+}
+
+type ReminderFilter func(reminder reminder.Reminder) bool
+
+func UserIDFilter(userID int64) ReminderFilter {
+	return func(reminder reminder.Reminder) bool {
+		return reminder.UserID == userID
+	}
 }
 
 func NewApp(repo Repository) App {

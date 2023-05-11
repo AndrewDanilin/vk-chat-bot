@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"VKInternshipChatBot/internal/app"
 	"VKInternshipChatBot/internal/entities/reminder"
 )
 
@@ -41,10 +42,16 @@ func (rm *RepositoryMap) DeleteReminderById(ctx context.Context, ID int64) error
 	return nil
 }
 
-func (rm *RepositoryMap) GetAllReminders(ctx context.Context) (*[]reminder.Reminder, error) {
+func (rm *RepositoryMap) GetRemindersByFilters(ctx context.Context, filters ...app.ReminderFilter) (*[]reminder.Reminder, error) {
 	reminders := make([]reminder.Reminder, 0)
 
+OUTER:
 	for _, v := range rm.data {
+		for _, f := range filters {
+			if !f(v) {
+				continue OUTER
+			}
+		}
 		reminders = append(reminders, v)
 	}
 
